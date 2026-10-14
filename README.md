@@ -1,6 +1,6 @@
 # SCDL3991 Code
 
-This repository contains three Jupyter notebooks developed for an SCDL3991 research project on neural-network-based model selection and learned statistics.
+This repository contains four Jupyter notebook experiments developed for an SCDL3991 research project on neural-network-based model selection and learned statistics. The corresponding Python builder scripts are included for reproducibility.
 
 ## Notebooks
 
@@ -21,6 +21,16 @@ Uses a permutation-invariant DeepSets encoder and adversarial learning to constr
 [`week10/paired_scale_invariant_statistic.ipynb`](week10/paired_scale_invariant_statistic.ipynb)
 
 Uses paired datasets, `y` and `2y`, with a shared CNN to learn a one-dimensional statistic that remains approximately stable under a scale transformation while preserving model-classification information.
+
+### Current experiment: random-scale invariance and summary dimension
+
+[`week11/random_scale_summary_dimension_study.ipynb`](week11/random_scale_summary_dimension_study.ipynb)
+
+Draws a positive random multiplier over a broad range, applies log preprocessing, and studies how learned summary dimensions 1, 2, 4, and 8 affect classification, scale invariance, and parameter leakage.
+
+## Python builder scripts
+
+Each experiment folder includes the Python script used to generate its notebook. These scripts provide a reproducible source version of the notebook structure and code.
 
 ## Running the notebooks
 
