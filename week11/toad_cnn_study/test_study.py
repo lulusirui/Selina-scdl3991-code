@@ -4,7 +4,7 @@ import numpy as np
 import tensorflow as tf
 from toad_simulator import simulate_toads, lag_summaries
 from toad_study import (StudyConfig, simulate_group_bank, make_group_pairs,
-                        distribution_mmd, singleton_kernel_distance,
+                        distribution_mmd, singleton_kernel_distance, standardized_pair_mse,
                         fit_preprocessing, transform, build_encoder)
 
 
@@ -73,6 +73,17 @@ class ScientificChecks(unittest.TestCase):
         distance = singleton_kernel_distance(x, y).numpy()
         self.assertAlmostEqual(distance[0], 0.0)
         self.assertGreater(distance[1], 0.0)
+
+    def test_mse_uses_summary_scale_without_shrink_shortcut(self):
+        left = tf.constant([[0., 1.], [1., 0.], [2., 2.], [3., 1.]])
+        right = tf.constant([[1., 1.], [2., 0.], [3., 2.], [4., 1.]])
+        base = standardized_pair_mse(left, right).numpy()
+        self.assertGreater(base, 0)
+        np.testing.assert_allclose(base, standardized_pair_mse(left * .01, right * .01), rtol=.01)
+        with tf.GradientTape() as tape:
+            tape.watch(left)
+            loss = standardized_pair_mse(left, right)
+        self.assertTrue(np.isfinite(tape.gradient(loss, left).numpy()).all())
 
     def test_bottleneck_dimensions(self):
         for architecture in ('CNN', 'FFNN'):

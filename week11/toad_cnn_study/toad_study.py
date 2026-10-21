@@ -188,6 +188,18 @@ def singleton_kernel_distance(left, right):
     return 2.0 - 2.0 * similarity
 
 
+def standardized_pair_mse(left, right):
+    """MSE of same-model pairs in pooled, batch-standardized summary units.
+
+    The scale is differentiable: shrinking every coordinate cannot lower the
+    penalty merely by changing units. The small floor handles constant inputs.
+    """
+    pooled = tf.concat([left, right], axis=0)
+    scale = tf.sqrt(tf.math.reduce_variance(pooled, axis=0) + 1e-6)
+    difference = (left - right) / scale
+    return tf.reduce_mean(tf.square(difference))
+
+
 def build_encoder(architecture, dimension):
     inputs = keras.Input((4, 12), name="lag_quantile_summaries")
     if architecture == "FFNN":
@@ -213,7 +225,7 @@ def build_encoder(architecture, dimension):
                        name=f"{architecture.lower()}_d{dimension}")
 
 
-def pair_objective(encoder, xa, xb, labels, weight, training):
+def pair_objective(encoder, xa, xb, labels, weight, training, penalty="mmd"):
     n_pairs = tf.shape(xa)[0]
     k = tf.shape(xa)[1]
     output_a = encoder(tf.reshape(xa, (-1, 4, 12)), training=training)
@@ -223,28 +235,34 @@ def pair_objective(encoder, xa, xb, labels, weight, training):
                 + tf.reduce_mean(keras.losses.sparse_categorical_crossentropy(repeated_labels, output_b["probabilities"])))
     sa = tf.reshape(output_a["summary"], (n_pairs, k, -1))
     sb = tf.reshape(output_b["summary"], (n_pairs, k, -1))
-    if xa.shape[1] == 1:
-        mmd = tf.reduce_mean(singleton_kernel_distance(sa[:, 0], sb[:, 0]))
+    if penalty == "mse":
+        regularizer = standardized_pair_mse(tf.reshape(sa, (-1, tf.shape(sa)[-1])),
+                                             tf.reshape(sb, (-1, tf.shape(sb)[-1])))
+    elif penalty == "mmd" and xa.shape[1] == 1:
+        regularizer = tf.reduce_mean(singleton_kernel_distance(sa[:, 0], sb[:, 0]))
+    elif penalty == "mmd":
+        regularizer = tf.reduce_mean(distribution_mmd(sa, sb))
     else:
-        mmd = tf.reduce_mean(distribution_mmd(sa, sb))
+        raise ValueError(f"Unknown penalty: {penalty}")
     acc = tf.reduce_mean(tf.cast(tf.argmax(output_a["probabilities"], axis=1, output_type=tf.int32) == repeated_labels, tf.float32))
-    return ce + weight * mmd, ce, mmd, acc
+    return ce + weight * regularizer, ce, regularizer, acc
 
 
-def train_encoder(encoder, banks, weight, config, output, run_id):
+def train_encoder(encoder, banks, weight, config, output, run_id, penalty="mmd",
+                  min_validation_accuracy=None):
     optimiser = keras.optimizers.Adam(config.learning_rate, clipnorm=5.0)
 
     @tf.function(reduce_retracing=True)
     def step(xa, xb, labels):
         with tf.GradientTape() as tape:
-            values = pair_objective(encoder, xa, xb, labels, weight, True)
+            values = pair_objective(encoder, xa, xb, labels, weight, True, penalty)
         gradients = tape.gradient(values[0], encoder.trainable_variables)
         optimiser.apply_gradients(zip(gradients, encoder.trainable_variables))
         return values
 
     @tf.function(reduce_retracing=True)
     def evaluate(xa, xb, labels):
-        return pair_objective(encoder, xa, xb, labels, weight, False)
+        return pair_objective(encoder, xa, xb, labels, weight, False, penalty)
 
     val_left, val_right = make_group_pairs(banks["val"]["model"], config.seed + 900)
     rows, best, wait = [], float("inf"), 0
@@ -270,14 +288,18 @@ def train_encoder(encoder, banks, weight, config, output, run_id):
         row.update(dict(zip(["loss", "ce", "mmd", "accuracy"], totals)))
         row.update(dict(zip(["val_loss", "val_ce", "val_mmd", "val_accuracy"], val_totals)))
         rows.append(row)
-        if val_totals[0] < best - 1e-5:
-            best, wait, best_weights = val_totals[0], 0, encoder.get_weights()
-        else:
+        selection_score = val_totals[1] if penalty == "mse" else val_totals[0]
+        eligible = min_validation_accuracy is None or val_totals[3] >= min_validation_accuracy
+        if eligible and selection_score < best - 1e-5:
+            best, wait, best_weights = selection_score, 0, encoder.get_weights()
+        elif np.isfinite(best):
             wait += 1
         if epoch == 0 or (epoch+1) % 10 == 0:
-            print(f"  {run_id} epoch {epoch+1}: val CE={val_totals[1]:.3f}, MMD={val_totals[2]:.3f}, accuracy={val_totals[3]:.3f}", flush=True)
+            print(f"  {run_id} epoch {epoch+1}: val CE={val_totals[1]:.3f}, {penalty.upper()}={val_totals[2]:.3f}, accuracy={val_totals[3]:.3f}", flush=True)
         if wait >= config.patience:
             break
+    if not np.isfinite(best):
+        raise RuntimeError(f"{run_id}: no checkpoint met the validation accuracy floor")
     encoder.set_weights(best_weights)
     encoder.save(output / "models" / f"{run_id}.keras")
     return pd.DataFrame(rows)
