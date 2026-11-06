@@ -1,0 +1,272 @@
+---
+title: "ABC Importance Sampling for the Week 4 Model-Choice Example"
+author: "Selina Lu"
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+## Aim
+
+This analysis applies ABC importance sampling to the same three candidate models used in Week 4:
+
+\[
+M_1:Y_i\sim\operatorname{Exp}(\theta),\qquad
+M_2:Y_i\sim\operatorname{LN}(\theta,1),\qquad
+M_3:Y_i\sim\operatorname{Gamma}(2,\theta),
+\]
+
+where \(\theta\) is a rate for \(M_1,M_3\), and is the log-scale mean for \(M_2\). The priors are
+\(\theta\sim\operatorname{Exp}(1)\) for \(M_1,M_3\),
+\(\theta\sim N(0,1)\) for \(M_2\), and \(P(M_m)=1/3\).
+
+The observed example has \(n=50\) and is generated from \(M_1\) with \(\theta_{\rm true}=0.843\). The random seed fixes the realised dataset, so every run is reproducible.
+
+```{r setup}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+set.seed(399105)
+
+# Works when run from the project root or rendered from inside week5/.
+output_dir <- if (basename(normalizePath(getwd())) == "week5") "." else "week5"
+
+N <- 30000
+n <- 50
+models <- c("M1", "M2", "M3")
+prior_model_prob <- setNames(rep(1 / 3, 3), models)
+
+# Deliberately different joint proposal g(m, theta).
+proposal_model_prob <- c(M1 = 0.45, M2 = 0.35, M3 = 0.20)
+proposal_rate <- c(M1 = 0.70, M3 = 1.35)
+proposal_sd_M2 <- 1.50
+
+simulate_data <- function(model, theta, n) {
+  switch(model,
+    M1 = rexp(n, rate = theta),
+    M2 = rlnorm(n, meanlog = theta, sdlog = 1),
+    M3 = rgamma(n, shape = 2, rate = theta)
+  )
+}
+
+summary_combined <- function(y) {
+  c(sum_y = sum(y), sum_log_y = sum(log(y)), sum_log2 = sum(log(y)^2))
+}
+
+draw_prior_theta <- function(model) {
+  if (model == "M2") rnorm(1) else rexp(1)
+}
+
+draw_proposal_theta <- function(model) {
+  switch(model,
+    M1 = rexp(1, rate = proposal_rate[["M1"]]),
+    M2 = rnorm(1, sd = proposal_sd_M2),
+    M3 = rexp(1, rate = proposal_rate[["M3"]])
+  )
+}
+
+log_prior_theta <- function(theta, model) {
+  if (model == "M2") dnorm(theta, log = TRUE) else dexp(theta, log = TRUE)
+}
+
+log_proposal_theta <- function(theta, model) {
+  switch(model,
+    M1 = dexp(theta, rate = proposal_rate[["M1"]], log = TRUE),
+    M2 = dnorm(theta, sd = proposal_sd_M2, log = TRUE),
+    M3 = dexp(theta, rate = proposal_rate[["M3"]], log = TRUE)
+  )
+}
+```
+
+## Observed data and scaling
+
+The summary is
+\[
+S(y)=\left(\sum_i y_i,\ \sum_i\log y_i,\ \sum_i(\log y_i)^2\right).
+\]
+Its components have different units, so Euclidean distance is calculated after dividing each component by its prior-predictive standard deviation. A separate pilot table is used to determine these fixed scales; the observed data are not used to tune them.
+
+```{r observed-and-pilot}
+y_obs <- simulate_data("M1", theta = 0.843, n = n)
+s_obs <- summary_combined(y_obs)
+
+N_pilot <- 15000
+pilot_model <- sample(models, N_pilot, replace = TRUE)
+pilot_summary <- matrix(NA_real_, N_pilot, 3,
+                        dimnames = list(NULL, names(s_obs)))
+
+for (i in seq_len(N_pilot)) {
+  theta_i <- draw_prior_theta(pilot_model[i])
+  pilot_summary[i, ] <- summary_combined(
+    simulate_data(pilot_model[i], theta_i, n)
+  )
+}
+
+summary_scale <- apply(pilot_summary, 2, sd)
+summary_scale
+```
+
+## ABC importance sampler
+
+For each draw, first sample \((m^{(i)},\theta^{(i)})\sim g\), simulate \(y^{(i)}\), and calculate the standardized distance \(d_i\). The unnormalised weight is
+
+\[
+\widetilde w_i
+=K_h(d_i)\,
+\frac{p(m^{(i)})\pi_{m^{(i)}}(\theta^{(i)})}
+     {g_M(m^{(i)})g_{m^{(i)}}(\theta^{(i)})},
+\qquad
+K_h(d)=\exp\{-\tfrac12(d/h)^2\}.
+\]
+
+Thus the importance correction accounts for both the non-uniform proposal on the model index and the model-specific proposal for \(\theta\). We set \(h\) to the 10th percentile of the simulated distances. This deterministic, reported rule avoids choosing a tolerance by looking at the final posterior.
+
+```{r importance-sampling}
+sampled_model <- sample(
+  models, N, replace = TRUE, prob = proposal_model_prob
+)
+theta <- numeric(N)
+distance <- numeric(N)
+log_prior <- numeric(N)
+log_proposal <- numeric(N)
+
+for (i in seq_len(N)) {
+  m <- sampled_model[i]
+  theta[i] <- draw_proposal_theta(m)
+  s_i <- summary_combined(simulate_data(m, theta[i], n))
+  distance[i] <- sqrt(sum(((s_i - s_obs) / summary_scale)^2))
+  log_prior[i] <- log(prior_model_prob[[m]]) + log_prior_theta(theta[i], m)
+  log_proposal[i] <- log(proposal_model_prob[[m]]) +
+    log_proposal_theta(theta[i], m)
+}
+
+h <- unname(quantile(distance, 0.10))
+log_weight <- -0.5 * (distance / h)^2 + log_prior - log_proposal
+
+# Stable normalisation (subtracting the maximum changes no normalised weight).
+weight_scaled <- exp(log_weight - max(log_weight))
+weight <- weight_scaled / sum(weight_scaled)
+
+results <- tibble(
+  draw = seq_len(N), model = sampled_model, theta = theta,
+  distance = distance, weight = weight
+)
+
+posterior_model <- results |>
+  group_by(model) |>
+  summarise(probability = sum(weight), .groups = "drop") |>
+  complete(model = models, fill = list(probability = 0)) |>
+  arrange(model)
+
+posterior_theta <- results |>
+  group_by(model) |>
+  summarise(
+    posterior_mean = weighted.mean(theta, weight),
+    conditional_ess = sum(weight)^2 / sum(weight^2),
+    .groups = "drop"
+  )
+
+ESS <- 1 / sum(weight^2)
+ESS_fraction <- ESS / N
+
+# Files used by the standalone Overleaf report.
+write.csv(posterior_model,
+          file.path(output_dir, "abc_importance_sampling_model_probabilities.csv"),
+          row.names = FALSE)
+
+latex_results <- c(
+  sprintf("The Gaussian-kernel bandwidth was $h=%.4f$.", h),
+  sprintf("The effective sample size was $\\operatorname{ESS}=%.1f$ out of $N=%s$, giving $\\operatorname{ESS}/N=%.4f$ (%.2f\\%%).",
+          ESS, format(N, big.mark = ","), ESS_fraction, 100 * ESS_fraction),
+  "\\begin{table}[H]",
+  "\\centering",
+  "\\caption{Estimated ABC posterior model probabilities.}",
+  "\\begin{tabular}{lc}",
+  "\\toprule",
+  "Model & Posterior probability \\\\",
+  "\\midrule",
+  paste0(sprintf("$M_1$ & %.4f ", posterior_model$probability[posterior_model$model == "M1"]), "\\\\"),
+  paste0(sprintf("$M_2$ & %.4f ", posterior_model$probability[posterior_model$model == "M2"]), "\\\\"),
+  paste0(sprintf("$M_3$ & %.4f ", posterior_model$probability[posterior_model$model == "M3"]), "\\\\"),
+  "\\bottomrule",
+  "\\end{tabular}",
+  "\\end{table}"
+)
+writeLines(latex_results,
+           file.path(output_dir, "abc_importance_sampling_results.tex"))
+
+posterior_model
+posterior_theta
+tibble(N = N, bandwidth_h = h, ESS = ESS, `ESS/N` = ESS_fraction)
+```
+
+## ESS and ESS/N
+
+For normalized weights \(w_i\),
+\[
+\operatorname{ESS}=\frac{1}{\sum_{i=1}^N w_i^2},
+\qquad
+\frac{\operatorname{ESS}}{N}=\frac{1}{N\sum_{i=1}^N w_i^2}.
+\]
+
+ESS is the approximate number of equally weighted draws carrying the same amount of information as the weighted sample. It lies between 1 and \(N\): it is \(N\) when all weights are equal and approaches 1 when one draw dominates. ESS/N is the same diagnostic on a 0-to-1 scale, so it is easier to compare runs with different \(N\). These are importance-weight diagnostics, not a guarantee that the ABC approximation or its bandwidth is accurate.
+
+For this run, \(\operatorname{ESS}\) is `r sprintf("%.1f", ESS)` out of \(N=`r format(N, big.mark=",")`\), and \(\operatorname{ESS}/N=`r sprintf("%.4f", ESS_fraction)`\) (`r sprintf("%.2f", 100 * ESS_fraction)`%). Hence the weighted output contains roughly the information of `r sprintf("%.0f", ESS)` equally weighted draws; the gap from \(N\) reflects both ABC kernel down-weighting and proposal mismatch.
+
+## Plots
+
+```{r plots, fig.width=9, fig.height=5.5}
+model_cols <- c(M1 = "#D55E00", M2 = "#0072B2", M3 = "#009E73")
+
+p_model <- ggplot(posterior_model, aes(model, probability, fill = model)) +
+  geom_col(width = 0.68) +
+  geom_text(aes(label = sprintf("%.3f", probability)), vjust = -0.45,
+            size = 4.2) +
+  scale_fill_manual(values = model_cols, guide = "none") +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.04))) +
+  labs(
+    title = "ABC importance-sampling posterior model probabilities",
+    subtitle = "Observed data: M1, n = 50, theta = 0.843",
+    x = NULL, y = "Estimated posterior probability"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.major.x = element_blank(), plot.title = element_text(face = "bold"))
+
+ggsave(file.path(output_dir, "abc_is_posterior_model_probabilities.png"), p_model,
+       width = 9, height = 5.5, dpi = 300)
+p_model
+
+p_weights <- results |>
+  mutate(rank = rank(-weight, ties.method = "first"),
+         cumulative_weight = cumsum(weight[order(-weight)])[rank]) |>
+  arrange(rank) |>
+  ggplot(aes(rank, cumulative_weight)) +
+  geom_line(linewidth = 0.9, colour = "#6A3D9A") +
+  annotate("label", x = 2, y = 0.90,
+           label = sprintf("ESS = %.1f\nESS/N = %.3f", ESS, ESS_fraction),
+           hjust = 0, colour = "#D55E00", fill = "white", size = 4) +
+  scale_x_log10(labels = scales::label_comma()) +
+  scale_y_continuous(labels = scales::label_percent()) +
+  labs(
+    title = "Concentration of normalized importance weights",
+    subtitle = "Draws are ordered from largest to smallest weight",
+    x = "Weight rank (log scale)", y = "Cumulative normalized weight"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+ggsave(file.path(output_dir, "abc_is_weight_diagnostics.png"), p_weights,
+       width = 9, height = 5.5, dpi = 300)
+p_weights
+```
+
+## Interpretation
+
+The bars estimate the ABC posterior probability of each candidate model after correcting for the deliberately non-prior proposal. The weight-concentration curve shows how quickly the normalized weight accumulates among the largest draws. A steep early rise corresponds to a small ESS/\(N\); a gradual rise indicates more even weights. Increasing \(N\) reduces Monte Carlo noise but does not by itself repair a poor proposal: proposal design and the ABC bandwidth must also be checked.

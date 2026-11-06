@@ -1,0 +1,721 @@
+---
+title: "scdl3991"
+format: html
+editor: visual
+---
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Set up a 1x2 plotting area to match the whiteboard's two graphs
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+
+# =====================================================================
+# 1. MCMC (Markov Chain Monte Carlo) Example
+# Demonstrating sampling from a complex (multimodal) target distribution
+# =====================================================================
+
+# Define a complex target density (e.g., a mixture of two normals)
+target_density <- function(x) {
+  0.4 * dnorm(x, mean = -2, sd = 1) + 0.6 * dnorm(x, mean = 2, sd = 1.5)
+}
+
+# Metropolis-Hastings MCMC Algorithm
+n_iter <- 10000
+samples_mcmc <- numeric(n_iter)
+current_x <- 0 # Initial value
+
+for (i in 1:n_iter) {
+  # Propose a new state from a Normal distribution centered at current state
+  proposed_x <- rnorm(1, mean = current_x, sd = 1)
+  
+  # Calculate acceptance ratio
+  acceptance_ratio <- target_density(proposed_x) / target_density(current_x)
+  
+  # Accept or reject
+  if (runif(1) < acceptance_ratio) {
+    current_x <- proposed_x
+  }
+  samples_mcmc[i] <- current_x
+}
+
+# Plot MCMC results (Histogram with overlaid density line, like the whiteboard)
+hist(samples_mcmc, breaks = 40, freq = FALSE, col = "lightblue", 
+     main = "MCMC Sampling (Complex Posterior)", xlab = expression(theta),
+     border = "white")
+# Overlay the true target density line
+curve(target_density(x), add = TRUE, col = "darkblue", lwd = 2)
+
+
+# =====================================================================
+# 2. MC (Monte Carlo) Example
+# Demonstrating direct sampling from a known, closed-form distribution
+# =====================================================================
+
+# Direct Monte Carlo sampling using built-in standard distribution functions
+mu <- 0
+sigma <- 1
+samples_mc <- rnorm(10000, mean = mu, sd = sigma)
+
+# Plot MC results (Simple bell curve, like the right side of the whiteboard)
+hist(samples_mc, breaks = 40, freq = FALSE, col = "lightgreen", 
+     main = "MC Sampling (Known Form)", xlab = expression(theta),
+     border = "white")
+# Overlay the theoretical normal density line
+curve(dnorm(x, mean = mu, sd = sigma), add = TRUE, col = "darkgreen", lwd = 2)
+
+# Reset plotting parameters
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Set seed so you get the exact same visual result if you run this
+set.seed(123)
+
+# Total number of steps the chain will take
+n_iter <- 2000
+
+# Initialize a vector to store our MCMC samples
+samples <- numeric(n_iter)
+
+# -------------------------------------------------------------------
+# THE SETUP
+# Let's say our true posterior distribution is centered at 10.
+# We are going to start our chain FAR AWAY at -50 to force it to 
+# search for the stationary distribution (the burn-in phase).
+# -------------------------------------------------------------------
+current_x <- -50 
+samples[1] <- current_x
+
+# Define our target posterior distribution (Normal with mean=10, sd=2)
+target_density <- function(x) {
+  dnorm(x, mean = 10, sd = 2)
+}
+
+# -------------------------------------------------------------------
+# THE MCMC ALGORITHM (Metropolis-Hastings)
+# -------------------------------------------------------------------
+for (i in 2:n_iter) {
+  # Propose a new step (random walk around the current position)
+  proposed_x <- rnorm(1, mean = current_x, sd = 3)
+  
+  # Calculate acceptance ratio (Posterior of Proposal / Posterior of Current)
+  ratio <- target_density(proposed_x) / target_density(current_x)
+  
+  # Accept or reject the proposal
+  if (runif(1) < ratio) {
+    current_x <- proposed_x
+  }
+  
+  # Log the sample
+  samples[i] <- current_x
+}
+
+# -------------------------------------------------------------------
+# VISUALIZATION
+# -------------------------------------------------------------------
+# Set up a 2x1 plot area
+par(mfrow = c(2, 1), mar = c(4, 4, 3, 1))
+
+# Plot 1: The Trace Plot (Showing the "finding" phase and the "stationary" phase)
+plot(1:n_iter, samples, type = "l", col = "steelblue", 
+     main = "Trace Plot: Notice the 'Burn-in' oscillation at the start",
+     xlab = "Iteration Number", ylab = "Parameter Value")
+
+# Add a line for where the true posterior is located
+abline(h = 10, col = "red", lwd = 2, lty = 2) 
+
+# Add a line indicating where the chain seems to have found the stationary distribution
+abline(v = 150, col = "darkgreen", lwd = 2, lty = 2) 
+legend("bottomright", legend = c("MCMC Chain", "True Mean (Posterior)", "End of Burn-in"), 
+       col = c("steelblue", "red", "darkgreen"), lty = c(1, 2, 2))
+
+# Plot 2: Histogram of the samples AFTER discarding the initial oscillation
+burn_in_period <- 150
+valid_samples <- samples[(burn_in_period + 1):n_iter]
+
+hist(valid_samples, breaks = 30, freq = FALSE, col = "lightblue", border = "white",
+     main = "Stationary Distribution (Posterior) After Burn-in",
+     xlab = "Parameter Value")
+
+# Overlay the true posterior curve to show they match
+curve(dnorm(x, mean = 10, sd = 2), add = TRUE, col = "darkred", lwd = 2)
+legend("topright", legend = c("Sampled Posterior", "True Posterior Density"), 
+       fill = c("lightblue", NA), border = c("white", NA), 
+       col = c(NA, "darkred"), lwd = c(NA, 2))
+
+# Reset plot settings
+par(mfrow = c(1, 1))
+```
+
+### The 5-Step ABC Algorithm Loop
+
+```{r}
+# Clear workspace and set seed
+rm(list = ls())
+set.seed(123)
+
+# =====================================================================
+# 1. SETUP MODEL PARAMETERS & OBSERVED DATA (X)
+# =====================================================================
+
+n <- 50             # Sample size
+true_mu <- 3        # True parameter value
+data_sd <- 1        # Known SD
+
+# Prior setup: theta (mu) ~ N(mu_0, sigma_0^2)
+mu_0 <- 0           
+sigma_0 <- 2        
+
+# Observed Dataset: X = (x_1, ..., x_n)
+X_obs <- rnorm(n, mean = true_mu, sd = data_sd)
+
+# Analytical True Posterior
+post_var  <- 1 / (1 / sigma_0^2 + n / data_sd^2)
+post_sd   <- sqrt(post_var)
+post_mean <- post_var * (mu_0 / sigma_0^2 + sum(X_obs) / data_sd^2)
+
+
+# =====================================================================
+# 2. ABC ALGORITHM FUNCTION
+# =====================================================================
+
+run_abc <- function(X_obs, summary_func, epsilon = 0.05, n_sim = 100000) {
+  # Calculate summary statistic for observed data X
+  X_stat_obs <- summary_func(X_obs)
+  
+  # Vectors to store tracking metrics
+  accepted_theta_star <- numeric()
+  accepted_Y_stat     <- numeric()
+  accepted_distances  <- numeric()
+  
+  for (i in 1:n_sim) {
+    # Step 1: Draw proposal theta* ~ Prior
+    theta_star <- rnorm(1, mean = mu_0, sd = sigma_0)
+    
+    # Step 2: Simulate dataset Y ~ Model(theta*)
+    Y_sim <- rnorm(n, mean = theta_star, sd = data_sd)
+    
+    # Step 3: Compute summary statistic for simulated data Y
+    Y_stat_sim <- summary_func(Y_sim)
+    
+    # Step 4: Distance d(Y_stat, X_stat)
+    distance <- abs(Y_stat_sim - X_stat_obs)
+    
+    # Step 5: Accept if distance < epsilon
+    if (distance < epsilon) {
+      accepted_theta_star <- c(accepted_theta_star, theta_star)
+      accepted_Y_stat     <- c(accepted_Y_stat, Y_stat_sim)
+      accepted_distances  <- c(accepted_distances, distance)
+    }
+  }
+  
+  return(list(
+    theta_star_vals = accepted_theta_star,
+    Y_stat_vals     = accepted_Y_stat,
+    distances       = accepted_distances,
+    X_stat_obs      = X_stat_obs,
+    total_sims      = n_sim
+  ))
+}
+
+
+# =====================================================================
+# 3. RUN EXPERIMENTS FOR ALL 3 SUMMARY STATISTICS
+# =====================================================================
+
+epsilon <- 0.05 
+n_simulations <- 100000
+
+cat("Running ABC simulations...\n")
+
+# Choice 1: Sample Mean (X_bar vs Y_bar)
+abc_mean <- run_abc(X_obs, summary_func = mean, epsilon = epsilon, n_sim = n_simulations)
+
+# Choice 2: Sample Median (Median(X) vs Median(Y))
+abc_median <- run_abc(X_obs, summary_func = median, epsilon = epsilon, n_sim = n_simulations)
+
+# Choice 3: First Observation (X_1 vs Y_1)
+abc_first <- run_abc(X_obs, summary_func = function(x) x[1], epsilon = epsilon, n_sim = n_simulations)
+
+
+# =====================================================================
+# 4. VISUALIZATION & LAYOUT
+# =====================================================================
+
+par(mfrow = c(1, 2), mar = c(5, 4.5, 5, 2))
+
+# --- Plot 1: Sample Mean ---
+dens_mean <- density(abc_mean$theta_star_vals)
+plot(dens_mean, col = "darkblue", lwd = 2, 
+     main = "ABC with Sample Mean\nSufficient Statistics", 
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(1, 5),
+     ylim = c(0, max(dens_mean$y, dnorm(post_mean, post_mean, post_sd)) * 1.1))
+
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+legend("topright", legend = c("ABC (Sample Mean)", "True Posterior"),
+       col = c("darkblue", "red"), lty = c(1, 2), lwd = 2, bty = "n")
+
+# --- Plot 2: Comparing All 3 Statistics ---
+plot(density(abc_mean$theta_star_vals), col = "darkblue", lwd = 2, 
+     main = "Impact of Different\nSummary Statistics", 
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(-1, 6),
+     ylim = c(0, max(dens_mean$y) * 1.1))
+
+lines(density(abc_median$theta_star_vals), col = "forestgreen", lwd = 2)
+lines(density(abc_first$theta_star_vals), col = "orange", lwd = 2)
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+
+legend("topleft", 
+       legend = c(as.expression(bquote("Mean (Suff: " ~ bar(X) ~ ", " ~ bar(Y) ~ ")")), 
+                  "Median (Median(X), Median(Y))", 
+                  expression("First Obs (" ~ X[1] ~ ", " ~ Y[1] ~ ")"), 
+                  "True Posterior"),
+       col = c("darkblue", "forestgreen", "orange", "red"), 
+       lty = c(1, 1, 1, 2), lwd = 2, bty = "n", cex = 0.75)
+
+par(mfrow = c(1, 1))
+
+
+# =====================================================================
+# 5. PRINT DETAILED RESULTS FOR ALL THREE STATISTICS
+# =====================================================================
+
+print_full_metrics <- function(abc_list, model_name, x_symbol, y_symbol) {
+  acc_count <- length(abc_list$theta_star_vals)
+  acc_rate  <- (acc_count / abc_list$total_sims) * 100
+  
+  cat(sprintf("\n--- %s ---\n", model_name))
+  cat("Accepted Count                :", acc_count, sprintf("(Acceptance Rate: %.2f%%)\n", acc_rate))
+  cat(sprintf("Observed Statistic (%s)      : %.4f\n", x_symbol, abc_list$X_stat_obs))
+  cat(sprintf("Mean Simulated Statistic (%s): %.4f\n", y_symbol, mean(abc_list$Y_stat_vals)))
+  cat(sprintf("Mean Distance |%s - %s|      : %.4f\n", y_symbol, x_symbol, mean(abc_list$distances)))
+  cat(sprintf("Max Distance (Must be < eps)  : %.4f\n", max(abc_list$distances)))
+  cat("Estimated Posterior Mean (mu)  :", round(mean(abc_list$theta_star_vals), 4), "\n")
+  cat("Estimated Posterior SD (mu)    :", round(sd(abc_list$theta_star_vals), 4), "\n")
+}
+
+cat("\n===================================================\n")
+cat("            ABC FULL SIMULATION RESULTS            \n")
+cat("===================================================\n")
+cat("True Analytical Posterior Mean:", round(post_mean, 4), "\n")
+cat("True Analytical Posterior SD  :", round(post_sd, 4), "\n")
+cat("Epsilon Tolerance (epsilon)   :", epsilon, "\n")
+
+# Print details for Choice 1
+print_full_metrics(abc_mean, "1. SAMPLE MEAN", "X_bar", "Y_bar")
+
+# Print details for Choice 2
+print_full_metrics(abc_median, "2. SAMPLE MEDIAN", "Median(X)", "Median(Y)")
+
+# Print details for Choice 3
+print_full_metrics(abc_first, "3. FIRST OBSERVATION", "X_1", "Y_1")
+
+cat("\n===================================================\n")
+```
+
+```{r}
+# Clear workspace and set seed
+rm(list = ls())
+set.seed(123)
+
+# =====================================================================
+# 1. SETUP MODEL PARAMETERS & OBSERVED DATA (X)
+# =====================================================================
+
+n <- 50             # Sample size
+true_mu <- 3        # True parameter value
+data_sd <- 1        # Known SD
+
+# Prior setup: theta (mu) ~ N(mu_0, sigma_0^2)
+mu_0 <- 0           
+sigma_0 <- 2        
+
+# Observed Dataset: X = (x_1, ..., x_n)
+X_obs <- rnorm(n, mean = true_mu, sd = data_sd)
+
+# Analytical True Posterior
+post_var  <- 1 / (1 / sigma_0^2 + n / data_sd^2)
+post_sd   <- sqrt(post_var)
+post_mean <- post_var * (mu_0 / sigma_0^2 + sum(X_obs) / data_sd^2)
+
+
+# =====================================================================
+# 2. ABC ALGORITHM FUNCTION
+# =====================================================================
+
+run_abc <- function(X_obs, summary_func, epsilon, n_sim = 100000) {
+  X_stat_obs <- summary_func(X_obs)
+  
+  accepted_theta_star <- numeric()
+  accepted_Y_stat     <- numeric()
+  accepted_distances  <- numeric()
+  
+  for (i in 1:n_sim) {
+    # Step 1: Draw proposal theta* ~ Prior
+    theta_star <- rnorm(1, mean = mu_0, sd = sigma_0)
+    
+    # Step 2: Simulate dataset Y ~ Model(theta*)
+    Y_sim <- rnorm(n, mean = theta_star, sd = data_sd)
+    
+    # Step 3: Compute summary statistic
+    Y_stat_sim <- summary_func(Y_sim)
+    
+    # Step 4: Distance d(Y_stat, X_stat)
+    distance <- abs(Y_stat_sim - X_stat_obs)
+    
+    # Step 5: Accept if distance < epsilon
+    if (distance < epsilon) {
+      accepted_theta_star <- c(accepted_theta_star, theta_star)
+      accepted_Y_stat     <- c(accepted_Y_stat, Y_stat_sim)
+      accepted_distances  <- c(accepted_distances, distance)
+    }
+  }
+  
+  return(list(
+    theta_star_vals = accepted_theta_star,
+    Y_stat_vals     = accepted_Y_stat,
+    distances       = accepted_distances,
+    X_stat_obs      = X_stat_obs,
+    total_sims      = n_sim,
+    epsilon         = epsilon
+  ))
+}
+
+
+# =====================================================================
+# 3. RUN EXPERIMENTS ACROSS DIFFERENT EPSILON VALUES
+# =====================================================================
+
+eps_list <- c(0.5, 0.1, 0.05, 0.01)
+n_simulations <- 100000
+results <- list()
+
+cat("Running ABC simulations across different epsilon values...\n")
+
+for (eps in eps_list) {
+  cat(sprintf("Simulating for epsilon = %.2f...\n", eps))
+  results[[as.character(eps)]] <- run_abc(
+    X_obs = X_obs, 
+    summary_func = mean, 
+    epsilon = eps, 
+    n_sim = n_simulations
+  )
+}
+
+
+# =====================================================================
+# 4. VISUALIZATION & LAYOUT
+# =====================================================================
+
+par(mfrow = c(1, 2), mar = c(5, 4.5, 4, 2))
+
+# Color palette for epsilons
+colors <- c("purple", "forestgreen", "darkblue", "orange")
+
+# --- Plot 1: Density Comparisons across Epsilon ---
+# Calculate density for smallest epsilon to gauge y-limit
+dens_tight <- density(results[["0.01"]]$theta_star_vals)
+max_y <- max(dens_tight$y, dnorm(post_mean, post_mean, post_sd)) * 1.15
+
+plot(dens_tight, col = colors[4], lwd = 2, 
+     main = expression(paste("Impact of Tolerance Threshold (", epsilon, ")")),
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(1, 5), ylim = c(0, max_y))
+
+for (k in 1:(length(eps_list) - 1)) {
+  eps_str <- as.character(eps_list[k])
+  lines(density(results[[eps_str]]$theta_star_vals), col = colors[k], lwd = 2)
+}
+
+# Add True Posterior
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+
+legend("topleft", 
+       legend = c(paste("eps =", eps_list), "True Posterior"),
+       col = c(colors, "red"), 
+       lty = c(rep(1, length(eps_list)), 2), 
+       lwd = 2, bty = "n", cex = 0.8)
+
+# --- Plot 2: Acceptance Rate vs. Epsilon Trade-off ---
+acc_rates <- sapply(results, function(res) (length(res$theta_star_vals) / res$total_sims) * 100)
+
+plot(eps_list, acc_rates, type = "b", pch = 19, col = "darkblue", lwd = 2,
+     main = expression(paste("Acceptance Rate vs. Tolerance (", epsilon, ")")),
+     cex.main = 0.95,
+     xlab = expression(epsilon), ylab = "Acceptance Rate (%)",
+     log = "x") # log scale highlights the dramatic drop at tiny epsilons
+
+grid()
+
+par(mfrow = c(1, 1))
+
+
+# =====================================================================
+# 5. PRINT DETAILED RESULTS TABLE
+# =====================================================================
+
+cat("\n=================================================================================\n")
+cat("                     ABC TOLERANCE (EPSILON) EXPERIMENT RESULTS                 \n")
+cat("=================================================================================\n")
+cat(sprintf("Analytical True Posterior Mean: %.4f | SD: %.4f\n", post_mean, post_sd))
+cat("---------------------------------------------------------------------------------\n")
+
+# Header
+cat(sprintf("%-10s | %-12s | %-12s | %-15s | %-15s\n", 
+            "Epsilon", "Accepted N", "Accept Rate", "Post Mean (mu)", "Post SD (mu)"))
+cat("---------------------------------------------------------------------------------\n")
+
+for (eps in eps_list) {
+  res <- results[[as.character(eps)]]
+  acc_count <- length(res$theta_star_vals)
+  acc_rate  <- (acc_count / res$total_sims) * 100
+  p_mean    <- mean(res$theta_star_vals)
+  p_sd      <- sd(res$theta_star_vals)
+  
+  cat(sprintf("%-10.2f | %-12d | %-11.2f%% | %-15.4f | %-15.4f\n", 
+              eps, acc_count, acc_rate, p_mean, p_sd))
+}
+
+cat("=================================================================================\n")
+```
+
+```{r}
+# Clear workspace and set seed
+rm(list = ls())
+set.seed(123)
+
+# =====================================================================
+# 1. SETUP MODEL PARAMETERS & OBSERVED DATA (X)
+# =====================================================================
+
+n <- 50             # Sample size
+true_mu <- 3        # True parameter value
+data_sd <- 1        # Known SD
+
+# Prior setup: theta (mu) ~ N(mu_0, sigma_0^2)
+mu_0 <- 0           
+sigma_0 <- 2        
+
+# Observed Dataset: X = (x_1, ..., x_n)
+X_obs <- rnorm(n, mean = true_mu, sd = data_sd)
+
+# Analytical True Posterior
+post_var  <- 1 / (1 / sigma_0^2 + n / data_sd^2)
+post_sd   <- sqrt(post_var)
+post_mean <- post_var * (mu_0 / sigma_0^2 + sum(X_obs) / data_sd^2)
+
+
+# =====================================================================
+# 2. JOINT SUMMARY STATISTIC & COVARIANCE ESTIMATION (PILOT RUN)
+# =====================================================================
+
+# Multi-dimensional summary statistic: Joint Sample Mean & Sample Median
+summary_func <- function(x) c(mean = mean(x), median = median(x))
+X_stat_obs <- summary_func(X_obs)
+
+# Pilot simulation to estimate scale/covariance matrix for Weighted & Mahalanobis metrics
+n_pilot <- 2000
+pilot_stats <- t(sapply(1:n_pilot, function(i) {
+  theta_p <- rnorm(1, mean = mu_0, sd = sigma_0)
+  summary_func(rnorm(n, mean = theta_p, sd = data_sd))
+}))
+
+cov_matrix  <- cov(pilot_stats)      # Full covariance matrix (for Mahalanobis)
+cov_inv     <- solve(cov_matrix)     # Inverse covariance
+var_weights <- diag(cov_matrix)      # Variance weights (for Weighted Euclidean)
+
+
+# =====================================================================
+# 3. ABC ALGORITHM FUNCTION (DISTANCE METRIC VARIATIONS)
+# =====================================================================
+
+run_abc_dist <- function(X_obs, summary_func, dist_metric = "euclidean", epsilon = 0.05, n_sim = 100000) {
+  
+  X_stat_obs <- summary_func(X_obs)
+  
+  accepted_theta_star <- numeric()
+  accepted_Y_stat     <- list()
+  accepted_distances  <- numeric()
+  
+  for (i in 1:n_sim) {
+    # Step 1: Draw proposal theta* ~ Prior
+    theta_star <- rnorm(1, mean = mu_0, sd = sigma_0)
+    
+    # Step 2: Simulate dataset Y ~ Model(theta*)
+    Y_sim <- rnorm(n, mean = theta_star, sd = data_sd)
+    
+    # Step 3: Compute summary statistic vector for simulated data Y
+    Y_stat_sim <- summary_func(Y_sim)
+    diff <- Y_stat_sim - X_stat_obs
+    
+    # Step 4: Distance metric d(Y_stat, X_stat)
+    if (dist_metric == "euclidean") {
+      # Standard Euclidean Distance (Identity matrix)
+      distance <- sqrt(sum(diff^2))
+    } else if (dist_metric == "weighted") {
+      # Weighted Euclidean Distance (Diagonal variance matrix)
+      distance <- sqrt(sum((diff^2) / var_weights))
+    } else if (dist_metric == "mahalanobis") {
+      # Mahalanobis Distance (Full covariance matrix)
+      distance <- sqrt(as.numeric(t(diff) %*% cov_inv %*% diff))
+    }
+    
+    # Step 5: Accept if distance < epsilon
+    if (distance < epsilon) {
+      accepted_theta_star <- c(accepted_theta_star, theta_star)
+      accepted_Y_stat[[length(accepted_Y_stat) + 1]] <- Y_stat_sim
+      accepted_distances  <- c(accepted_distances, distance)
+    }
+  }
+  
+  Y_stat_mat <- do.call(rbind, accepted_Y_stat)
+  
+  return(list(
+    theta_star_vals = accepted_theta_star,
+    Y_stat_vals     = Y_stat_mat,
+    distances       = accepted_distances,
+    X_stat_obs      = X_stat_obs,
+    total_sims      = n_sim
+  ))
+}
+
+
+# =====================================================================
+# 4. RUN EXPERIMENTS FOR ALL 3 DISTANCE METRICS
+# =====================================================================
+
+epsilon <- 0.05 
+n_simulations <- 100000
+
+cat("Running ABC simulations across distance metrics...\n")
+
+# Choice 1: Standard Euclidean Distance
+abc_euclidean <- run_abc_dist(X_obs, summary_func, dist_metric = "euclidean", epsilon = epsilon, n_sim = n_simulations)
+
+# Choice 2: Weighted Euclidean Distance
+abc_weighted <- run_abc_dist(X_obs, summary_func, dist_metric = "weighted", epsilon = epsilon, n_sim = n_simulations)
+
+# Choice 3: Mahalanobis Distance
+abc_mahalanobis <- run_abc_dist(X_obs, summary_func, dist_metric = "mahalanobis", epsilon = epsilon, n_sim = n_simulations)
+
+
+# =====================================================================
+# 5. VISUALIZATION & LAYOUT (2x2 GRID WITH CORNER-ALIGNED LEGENDS)
+# =====================================================================
+
+par(mfrow = c(2, 2), mar = c(4.5, 4.5, 3.5, 2))
+
+# Compute maximum height and add headroom (35%) to avoid legend overlap
+max_y <- max(
+  density(abc_euclidean$theta_star_vals)$y,
+  density(abc_weighted$theta_star_vals)$y,
+  density(abc_mahalanobis$theta_star_vals)$y,
+  dnorm(post_mean, post_mean, post_sd)
+) * 1.35
+
+# --- Plot 1: Standard Euclidean Distance ---
+dens_euc <- density(abc_euclidean$theta_star_vals)
+plot(dens_euc, col = "darkblue", lwd = 2, 
+     main = "ABC with Standard Euclidean\nJoint (Mean, Median)", 
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(0.5, 5.5),
+     ylim = c(0, max_y))
+
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+legend("topleft", legend = c("ABC (Euclidean)", "True Posterior"),
+       col = c("darkblue", "red"), lty = c(1, 2), lwd = 2, bty = "n", cex = 0.75)
+
+# --- Plot 2: Weighted Euclidean Distance ---
+dens_weight <- density(abc_weighted$theta_star_vals)
+plot(dens_weight, col = "forestgreen", lwd = 2, 
+     main = "ABC with Weighted Euclidean\nJoint (Mean, Median)", 
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(0.5, 5.5),
+     ylim = c(0, max_y))
+
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+legend("topleft", legend = c("ABC (Weighted)", "True Posterior"),
+       col = c("forestgreen", "red"), lty = c(1, 2), lwd = 2, bty = "n", cex = 0.75)
+
+# --- Plot 3: Mahalanobis Distance ---
+dens_mahal <- density(abc_mahalanobis$theta_star_vals)
+plot(dens_mahal, col = "purple", lwd = 2, 
+     main = "ABC with Mahalanobis Distance\nJoint (Mean, Median)", 
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(0.5, 5.5),
+     ylim = c(0, max_y))
+
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+legend("topleft", legend = c("ABC (Mahalanobis)", "True Posterior"),
+       col = c("purple", "red"), lty = c(1, 2), lwd = 2, bty = "n", cex = 0.75)
+
+# --- Plot 4: Comparing All 3 Distance Metrics ---
+plot(density(abc_euclidean$theta_star_vals), col = "darkblue", lwd = 2, 
+     main = "Impact of Different\nDistance Metrics", 
+     cex.main = 0.95,
+     xlab = expression(mu), ylab = "Density", xlim = c(0.5, 5.5),
+     ylim = c(0, max_y))
+
+lines(density(abc_weighted$theta_star_vals), col = "forestgreen", lwd = 2)
+lines(density(abc_mahalanobis$theta_star_vals), col = "purple", lwd = 2)
+curve(dnorm(x, mean = post_mean, sd = post_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+
+legend("topleft", 
+       legend = c("Standard Euclidean", 
+                  "Weighted Euclidean", 
+                  "Mahalanobis Distance", 
+                  "True Posterior"),
+       col = c("darkblue", "forestgreen", "purple", "red"), 
+       lty = c(1, 1, 1, 2), lwd = 2, bty = "n", cex = 0.70)
+
+par(mfrow = c(1, 1))
+
+
+# =====================================================================
+# 6. PRINT DETAILED RESULTS FOR ALL THREE DISTANCE METRICS
+# =====================================================================
+
+print_full_metrics <- function(abc_list, model_name) {
+  acc_count <- length(abc_list$theta_star_vals)
+  acc_rate  <- (acc_count / abc_list$total_sims) * 100
+  y_stat_means <- colMeans(abc_list$Y_stat_vals)
+  
+  cat(sprintf("\n--- %s ---\n", model_name))
+  cat("Accepted Count                 :", acc_count, sprintf("(Acceptance Rate: %.2f%%)\n", acc_rate))
+  cat(sprintf("Observed Statistic (Mean, Med) : %.4f, %.4f\n", abc_list$X_stat_obs[1], abc_list$X_stat_obs[2]))
+  cat(sprintf("Mean Simulated Stat (Y_bar,Med): %.4f, %.4f\n", y_stat_means[1], y_stat_means[2]))
+  cat(sprintf("Mean Distance                  : %.4f\n", mean(abc_list$distances)))
+  cat(sprintf("Max Distance (Must be < eps)  : %.4f\n", max(abc_list$distances)))
+  cat("Estimated Posterior Mean (mu)  :", round(mean(abc_list$theta_star_vals), 4), "\n")
+  cat("Estimated Posterior SD (mu)    :", round(sd(abc_list$theta_star_vals), 4), "\n")
+}
+
+cat("\n===================================================\n")
+cat("            ABC FULL SIMULATION RESULTS            \n")
+cat("===================================================\n")
+cat("True Analytical Posterior Mean:", round(post_mean, 4), "\n")
+cat("True Analytical Posterior SD  :", round(post_sd, 4), "\n")
+cat("Epsilon Tolerance (epsilon)   :", epsilon, "\n")
+
+# Print details for Choice 1
+print_full_metrics(abc_euclidean, "1. STANDARD EUCLIDEAN DISTANCE")
+
+# Print details for Choice 2
+print_full_metrics(abc_weighted, "2. WEIGHTED EUCLIDEAN DISTANCE")
+
+# Print details for Choice 3
+print_full_metrics(abc_mahalanobis, "3. MAHALANOBIS DISTANCE")
+
+cat("\n===================================================\n")
+```
+
+
+
+```{r}
+
+```
+
