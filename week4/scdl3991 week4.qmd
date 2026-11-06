@@ -1,0 +1,891 @@
+---
+title: "scdl week4"
+format: html
+editor: visual
+---
+```{r}
+# ============================================================
+# 1. Packages and plotting theme
+# ============================================================
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(scales)
+
+set.seed(123)
+
+# Pretty colours
+model_cols <- c(
+  "M1" = "#E76F51",   # coral
+  "M2" = "#2A9D8F",   # teal
+  "M3" = "#6C63FF"    # purple
+)
+
+approach_cols <- c(
+  "Model-specific" = "#F4A261",
+  "Combined"       = "#457B9D"
+)
+
+# Consistent plot theme
+theme_scdl <- theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(
+      size = 17,
+      face = "bold",
+      hjust = 0.5
+    ),
+    plot.subtitle = element_text(
+      size = 11,
+      hjust = 0.5,
+      colour = "grey35"
+    ),
+    axis.title = element_text(
+      face = "bold"
+    ),
+    strip.text = element_text(
+      face = "bold",
+      size = 12
+    ),
+    legend.title = element_text(
+      face = "bold"
+    ),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(12, 15, 12, 15)
+  )
+```
+```{r}
+# ============================================================
+# 2. Model simulation functions
+# ============================================================
+
+# Draw theta from the prior
+draw_theta <- function(model) {
+
+  if (model == "M1") {
+    return(rexp(1, rate = 1))
+  }
+
+  if (model == "M2") {
+    return(rnorm(1, mean = 0, sd = 1))
+  }
+
+  if (model == "M3") {
+    return(rexp(1, rate = 1))
+  }
+}
+
+
+# Generate a dataset conditional on theta
+simulate_data <- function(model, theta, n) {
+
+  if (model == "M1") {
+
+    # Exponential(theta), theta interpreted as RATE
+    return(
+      rexp(n, rate = theta)
+    )
+
+  }
+
+  if (model == "M2") {
+
+    # Lognormal(theta, 1)
+    # theta = meanlog
+    return(
+      rlnorm(
+        n,
+        meanlog = theta,
+        sdlog = 1
+      )
+    )
+
+  }
+
+  if (model == "M3") {
+
+    # Gamma(shape = 2, theta)
+    # theta interpreted as RATE
+    return(
+      rgamma(
+        n,
+        shape = 2,
+        rate = theta
+      )
+    )
+
+  }
+}
+```
+
+```{r}
+# ============================================================
+# 3. Summary statistics
+# ============================================================
+
+# ------------------------------------------------------------
+# Approach 1:
+# Model-specific sufficient statistic
+# ------------------------------------------------------------
+
+summary_specific <- function(y, model) {
+
+  if (model == "M1") {
+
+    return(sum(y))
+
+  }
+
+  if (model == "M2") {
+
+    return(sum(log(y)))
+
+  }
+
+  if (model == "M3") {
+
+    return(sum(y))
+
+  }
+}
+
+
+# ------------------------------------------------------------
+# Approach 2:
+# Combined summary statistic
+# ------------------------------------------------------------
+
+summary_combined <- function(y) {
+
+  c(
+    sum_y     = sum(y),
+    sum_log_y = sum(log(y)),
+    sum_log2  = sum(log(y)^2)
+  )
+}
+```
+
+```{r}
+# ============================================================
+# 4. ABC reference table
+# ============================================================
+
+N_ABC <- 30000
+n <- 50
+
+# Equal prior probability for the three models
+ref_model <- sample(
+  c("M1", "M2", "M3"),
+  size = N_ABC,
+  replace = TRUE,
+  prob = c(1/3, 1/3, 1/3)
+)
+
+# Storage
+ref_theta <- numeric(N_ABC)
+
+ref_specific <- numeric(N_ABC)
+
+ref_combined <- matrix(
+  NA,
+  nrow = N_ABC,
+  ncol = 3
+)
+
+colnames(ref_combined) <- c(
+  "sum_y",
+  "sum_log_y",
+  "sum_log2"
+)
+
+
+# Generate prior predictive simulations
+for (i in seq_len(N_ABC)) {
+
+  m <- ref_model[i]
+
+  theta <- draw_theta(m)
+
+  y_sim <- simulate_data(
+    model = m,
+    theta = theta,
+    n = n
+  )
+
+  ref_theta[i] <- theta
+
+  ref_specific[i] <-
+    summary_specific(y_sim, m)
+
+  ref_combined[i, ] <-
+    summary_combined(y_sim)
+}
+
+
+reference_table <- data.frame(
+  model = ref_model,
+  theta = ref_theta,
+  specific = ref_specific,
+  sum_y = ref_combined[, 1],
+  sum_log_y = ref_combined[, 2],
+  sum_log2 = ref_combined[, 3]
+)
+
+head(reference_table)
+```
+
+```{r}
+# ============================================================
+# 5. Scaling constants
+# ============================================================
+
+# Approach 1:
+# calculate separate SDs within each model
+specific_sd <- reference_table %>%
+  group_by(model) %>%
+  summarise(
+    sd_specific = sd(specific),
+    .groups = "drop"
+  )
+
+specific_sd
+```
+
+```{r}
+combined_sd <- apply(
+  ref_combined,
+  2,
+  sd
+)
+
+combined_sd
+```
+
+```{r}
+# ============================================================
+# 6. ABC Approach 1
+# ============================================================
+
+abc_specific <- function(y_obs, accept_rate = 0.01) {
+
+  distances <- numeric(N_ABC)
+
+  for (m in c("M1", "M2", "M3")) {
+
+    rows <- which(reference_table$model == m)
+
+    # Observed statistic appropriate for this candidate model
+    obs_stat <- summary_specific(
+      y_obs,
+      m
+    )
+
+    sd_m <- specific_sd$sd_specific[
+      specific_sd$model == m
+    ]
+
+    distances[rows] <-
+      abs(
+        reference_table$specific[rows] -
+          obs_stat
+      ) / sd_m
+  }
+
+  # Accept closest simulations
+  n_accept <- ceiling(
+    N_ABC * accept_rate
+  )
+
+  accepted <-
+    order(distances)[1:n_accept]
+
+  posterior <-
+    table(
+      factor(
+        reference_table$model[accepted],
+        levels = c("M1", "M2", "M3")
+      )
+    ) / n_accept
+
+  as.numeric(posterior) |>
+    setNames(
+      c("M1", "M2", "M3")
+    )
+}
+```
+
+```{r}
+# ============================================================
+# 7. ABC Approach 2
+# ============================================================
+
+abc_combined <- function(y_obs, accept_rate = 0.01) {
+
+  obs_summary <-
+    summary_combined(y_obs)
+
+  # Standardised Euclidean distance
+  standardised_difference <-
+    sweep(
+      ref_combined,
+      2,
+      obs_summary,
+      FUN = "-"
+    )
+
+  standardised_difference <-
+    sweep(
+      standardised_difference,
+      2,
+      combined_sd,
+      FUN = "/"
+    )
+
+  distances <-
+    sqrt(
+      rowSums(
+        standardised_difference^2
+      )
+    )
+
+  n_accept <-
+    ceiling(
+      N_ABC * accept_rate
+    )
+
+  accepted <-
+    order(distances)[1:n_accept]
+
+  posterior <-
+    table(
+      factor(
+        reference_table$model[accepted],
+        levels = c("M1", "M2", "M3")
+      )
+    ) / n_accept
+
+  as.numeric(posterior) |>
+    setNames(
+      c("M1", "M2", "M3")
+    )
+}
+```
+
+```{r}
+# ============================================================
+# 8. Test using one observed dataset
+# ============================================================
+
+set.seed(123)
+
+true_model <- "M1"
+
+theta_true <- draw_theta(true_model)
+
+y_obs <- simulate_data(
+  model = true_model,
+  theta = theta_true,
+  n = n
+)
+
+theta_true
+post_specific <-
+  abc_specific(y_obs)
+
+post_specific
+post_combined <-
+  abc_combined(y_obs)
+
+post_combined
+```
+
+```{r}
+# ============================================================
+# Plot 1: Posterior probabilities for ONE observed dataset
+# ============================================================
+
+single_result <- data.frame(
+  Model = rep(
+    c("M1", "M2", "M3"),
+    2
+  ),
+  Probability = c(
+    post_specific,
+    post_combined
+  ),
+  Approach = rep(
+    c(
+      "Model-specific",
+      "Combined"
+    ),
+    each = 3
+  )
+)
+
+
+p1 <- ggplot(
+  single_result,
+  aes(
+    x = Model,
+    y = Probability,
+    fill = Approach
+  )
+) +
+
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    alpha = 0.9
+  ) +
+
+  geom_text(
+    aes(
+      label = percent(
+        Probability,
+        accuracy = 0.1
+      )
+    ),
+    position = position_dodge(width = 0.75),
+    vjust = -0.45,
+    size = 4.3,
+    fontface = "bold"
+  ) +
+
+  scale_fill_manual(
+    values = approach_cols
+  ) +
+
+  scale_y_continuous(
+    labels = percent_format(),
+    limits = c(0, 1.08),
+    expand = expansion(mult = c(0, 0))
+  ) +
+
+  labs(
+    title = "ABC posterior model probabilities",
+    subtitle = paste0(
+      "Observed data generated from ",
+      true_model,
+      "  |  n = ",
+      n,
+      "  |  true theta = ",
+      round(theta_true, 3)
+    ),
+    x = "Candidate model",
+    y = "Posterior probability",
+    fill = "ABC approach"
+  ) +
+
+  theme_scdl +
+
+  theme(
+    legend.position = "top"
+  )
+
+
+p1
+```
+
+```{r}
+ggsave(
+  "plot1_single_dataset_posterior.png",
+  p1,
+  width = 8,
+  height = 5.5,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+```{r}
+# ============================================================
+# 9. Repeated simulation experiment
+# ============================================================
+
+R <- 100
+
+run_one_experiment <- function(
+    true_model,
+    replicate_id,
+    n = 50,
+    accept_rate = 0.01
+) {
+
+  # Draw true theta from corresponding prior
+  theta_true <-
+    draw_theta(true_model)
+
+  # Generate observed dataset
+  y_obs <-
+    simulate_data(
+      model = true_model,
+      theta = theta_true,
+      n = n
+    )
+
+  # ABC Approach 1
+  p_specific <-
+    abc_specific(
+      y_obs,
+      accept_rate
+    )
+
+  # ABC Approach 2
+  p_combined <-
+    abc_combined(
+      y_obs,
+      accept_rate
+    )
+
+  # Store results
+  bind_rows(
+
+    data.frame(
+      replicate = replicate_id,
+      true_model = true_model,
+      theta_true = theta_true,
+      approach = "Model-specific",
+      M1 = p_specific["M1"],
+      M2 = p_specific["M2"],
+      M3 = p_specific["M3"]
+    ),
+
+    data.frame(
+      replicate = replicate_id,
+      true_model = true_model,
+      theta_true = theta_true,
+      approach = "Combined",
+      M1 = p_combined["M1"],
+      M2 = p_combined["M2"],
+      M3 = p_combined["M3"]
+    )
+
+  )
+}
+set.seed(123)
+
+results <- map_dfr(
+  c("M1", "M2", "M3"),
+  function(m) {
+
+    map_dfr(
+      1:R,
+      function(r) {
+
+        run_one_experiment(
+          true_model = m,
+          replicate_id = r,
+          n = n,
+          accept_rate = 0.01
+        )
+
+      }
+    )
+  }
+)
+
+head(results)
+```
+```{r}
+nrow(results)
+```
+```{r}
+# ============================================================
+# 10. Probability assigned to true model
+# ============================================================
+
+results <- results %>%
+  rowwise() %>%
+  mutate(
+
+    prob_true = case_when(
+
+      true_model == "M1" ~ M1,
+
+      true_model == "M2" ~ M2,
+
+      true_model == "M3" ~ M3
+
+    ),
+
+    selected_model =
+      c("M1", "M2", "M3")[
+        which.max(
+          c(M1, M2, M3)
+        )
+      ],
+
+    correct =
+      selected_model == true_model
+
+  ) %>%
+  ungroup()
+```
+
+```{r}
+# ============================================================
+# Plot 2: Distribution of posterior probability
+# assigned to the TRUE model
+# ============================================================
+
+p2 <- ggplot(
+  results,
+  aes(
+    x = approach,
+    y = prob_true,
+    fill = approach
+  )
+) +
+
+  geom_violin(
+    alpha = 0.55,
+    width = 0.85,
+    trim = FALSE
+  ) +
+
+  geom_boxplot(
+    width = 0.20,
+    alpha = 0.9,
+    outlier.shape = NA
+  ) +
+
+  geom_jitter(
+    width = 0.08,
+    alpha = 0.25,
+    size = 1.3
+  ) +
+
+  facet_wrap(
+    ~ true_model,
+    nrow = 1,
+    labeller = as_labeller(
+      c(
+        M1 = "True model: M1",
+        M2 = "True model: M2",
+        M3 = "True model: M3"
+      )
+    )
+  ) +
+
+  scale_fill_manual(
+    values = approach_cols
+  ) +
+
+  scale_y_continuous(
+    labels = percent_format(),
+    limits = c(0, 1)
+  ) +
+
+  labs(
+    title = "Posterior probability assigned to the true model",
+    subtitle =
+      "Each point represents one simulated observed dataset",
+    x = NULL,
+    y = "Posterior probability of true model",
+    fill = "ABC approach"
+  ) +
+
+  theme_scdl +
+
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(
+      angle = 15,
+      hjust = 1
+    )
+  )
+
+
+p2
+```
+```{r}
+ggsave(
+  "plot2_true_model_probability.png",
+  p2,
+  width = 11,
+  height = 5.5,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+```{r}
+# ============================================================
+# Model selection accuracy
+# ============================================================
+
+accuracy_results <- results %>%
+  group_by(
+    true_model,
+    approach
+  ) %>%
+  summarise(
+    accuracy = mean(correct),
+    .groups = "drop"
+  )
+
+accuracy_results
+# ============================================================
+# Plot 3: Correct model selection rate
+# ============================================================
+
+p3 <- ggplot(
+  accuracy_results,
+  aes(
+    x = true_model,
+    y = accuracy,
+    fill = approach
+  )
+) +
+
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.62,
+    alpha = 0.9
+  ) +
+
+  geom_text(
+    aes(
+      label = percent(
+        accuracy,
+        accuracy = 1
+      )
+    ),
+    position = position_dodge(width = 0.75),
+    vjust = -0.4,
+    size = 4.5,
+    fontface = "bold"
+  ) +
+
+  scale_fill_manual(
+    values = approach_cols
+  ) +
+
+  scale_y_continuous(
+    labels = percent_format(),
+    limits = c(0, 1.08),
+    expand = expansion(mult = c(0, 0))
+  ) +
+
+  labs(
+    title = "Correct model selection rate",
+    subtitle = paste0(
+      R,
+      " simulated datasets for each true model"
+    ),
+    x = "True data-generating model",
+    y = "Correct selection rate",
+    fill = "ABC approach"
+  ) +
+
+  theme_scdl +
+
+  theme(
+    legend.position = "top"
+  )
+
+
+p3
+```
+```{r}
+posterior_long <- results %>%
+
+  select(
+    replicate,
+    true_model,
+    approach,
+    M1,
+    M2,
+    M3
+  ) %>%
+
+  pivot_longer(
+    cols = c(M1, M2, M3),
+    names_to = "candidate_model",
+    values_to = "posterior_probability"
+  )
+mean_posterior <- posterior_long %>%
+
+  group_by(
+    true_model,
+    approach,
+    candidate_model
+  ) %>%
+
+  summarise(
+    mean_probability =
+      mean(posterior_probability),
+    .groups = "drop"
+  )
+# ============================================================
+# Plot 5: Average posterior probabilities
+# ============================================================
+
+p5 <- ggplot(
+  mean_posterior,
+  aes(
+    x = candidate_model,
+    y = mean_probability,
+    fill = candidate_model
+  )
+) +
+
+  geom_col(
+    width = 0.65,
+    alpha = 0.9
+  ) +
+
+  geom_text(
+    aes(
+      label = percent(
+        mean_probability,
+        accuracy = 1
+      )
+    ),
+    vjust = -0.4,
+    fontface = "bold",
+    size = 4
+  ) +
+
+  facet_grid(
+    approach ~ true_model,
+    labeller = labeller(
+      true_model = c(
+        M1 = "True M1",
+        M2 = "True M2",
+        M3 = "True M3"
+      )
+    )
+  ) +
+
+  scale_fill_manual(
+    values = model_cols
+  ) +
+
+  scale_y_continuous(
+    labels = percent_format(),
+    limits = c(0, 1.08),
+    expand = expansion(mult = c(0, 0))
+  ) +
+
+  labs(
+    title = "Average ABC posterior model probabilities",
+    subtitle =
+      "Comparison of model-specific and combined summary statistics",
+    x = "Candidate model",
+    y = "Mean posterior probability",
+    fill = "Candidate model"
+  ) +
+
+  theme_scdl +
+
+  theme(
+    legend.position = "top"
+  )
+
+
+p5
+```
+
